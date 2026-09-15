@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import {
   postContent,
+  uploadMedia,
   resharePost,
   previewPost,
   generateContent,
@@ -8,6 +9,47 @@ import {
 } from '../config/api';
 import { useApp } from '../context/AppContext';
 import toast from 'react-hot-toast';
+
+/**
+ * /api/post and /api/reshare body shape:
+ *   { success, results: [...], mediaAttached?, resolvedUrn?, logRow? }
+ * Only read results/success/(mediaAttached|resolvedUrn). Never iterate root or read logRow.
+ */
+const parsePublishResults = (data, actionLabel = 'Post') => {
+  if (data == null || data === '') {
+    throw new Error(
+      `${actionLabel} API returned an empty response. The post may not have been created — check n8n Respond node and LinkedIn.`
+    );
+  }
+
+  // Never treat root as an array / Object.keys(data) — logRow is sibling metadata only
+  if (typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(
+      `${actionLabel} API returned an unexpected response shape (expected object with results[]). Raw: ${JSON.stringify(data).slice(0, 180)}`
+    );
+  }
+
+  const success = data.success;
+  const results = Array.isArray(data.results) ? data.results : [];
+  const mediaAttached = Boolean(data.mediaAttached);
+  const resolvedUrn = data.resolvedUrn;
+  // data.logRow intentionally ignored
+
+  if (success === false) {
+    throw new Error(data.error || data.message || `${actionLabel} failed`);
+  }
+
+  if (!Array.isArray(data.results)) {
+    throw new Error(
+      `${actionLabel} API returned an unexpected response (missing results[]). Raw: ${JSON.stringify(data).slice(0, 180)}`
+    );
+  }
+
+  return { success: success !== false, results, mediaAttached, resolvedUrn };
+};
+
+const isTargetSuccess = (r) =>
+  r.status === 200 || r.status === 'success' || r.status === '200';
 
 export const usePost = () => {
   const { addActivity, pages: allPages, groups: allGroups } = useApp();
@@ -133,7 +175,10 @@ export const usePost = () => {
   };
 
   // 3. Publish original content
-  const handlePost = async (content, targetPages, targetGroups) => {
+  // Step 1: POST /api/upload-media → mediaUrn
+  // Step 2: POST /api/post with mediaUrn only (NO image bytes)
+  // `media` can be a data URL string OR { dataUrl, mimeType, filename }
+  const handlePost = async (content, targetPages, targetGroups, media = null) => {
     const allTargets = [
       ...targetPages.map((p) => ({ ...p, type: 'page' })),
       ...targetGroups.map((g) => ({ ...g, type: 'group' })),
@@ -148,26 +193,90 @@ export const usePost = () => {
     startProgressSimulation(allTargets);
 
     try {
-      const res = await postContent(content, targetPages, targetGroups);
-      stopProgressSimulation();
+      let mediaOptions = null;
 
-      let results = [];
-      if (res.data?.success && Array.isArray(res.data?.results)) {
-        results = res.data.results;
-      } else if (res.data?.success === false) {
-        throw new Error(res.data?.error || res.data?.message || 'Posting failed');
-      } else {
-        // synthesize from targets if format differs
-        results = allTargets.map((t) => ({
-          target: t.name,
-          type: t.type,
-          status: 200,
-          postUrn: `urn:li:share:${Math.floor(100000 + Math.random() * 900000)}`,
-        }));
+      if (media) {
+        const dataUrl = typeof media === 'string' ? media : media.dataUrl;
+        const fileMime = typeof media === 'object' ? media.mimeType : null;
+        const fileName = typeof media === 'object' ? media.filename : null;
+
+        if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+          throw new Error('Attached media could not be parsed. Please re-attach the file.');
+        }
+
+        // Strip prefix: data:image/jpeg;base64,<RAW>
+        const mediaBase64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const mimeType =
+          fileMime ||
+          dataUrl.slice('data:'.length, dataUrl.indexOf(';')) ||
+          'image/jpeg';
+        const filename =
+          fileName ||
+          (mimeType === 'application/pdf' ? 'document.pdf' : 'photo.jpg');
+
+        if (!mediaBase64) {
+          throw new Error('Attached media base64 was empty after stripping the data URL prefix.');
+        }
+
+        const uploadToastId = toast.loading('Step 1/2: Uploading media via /api/upload-media…');
+        try {
+          // Step 1 — Upload media first
+          const uploadResult = await uploadMedia({
+            mimeType,
+            filename,
+            mediaBase64,
+          });
+
+          console.log('[usePost] upload-media response:', uploadResult.status, uploadResult.data);
+
+          if (!uploadResult.data?.success) {
+            throw new Error(
+              uploadResult.data?.error ||
+                uploadResult.data?.message ||
+                'Media upload failed'
+            );
+          }
+
+          const { mediaUrn, isPdf } = uploadResult.data;
+          if (!mediaUrn) {
+            throw new Error(
+              !uploadResult.data || uploadResult.data === ''
+                ? 'n8n /api/upload-media returned empty body — expected { success, mediaUrn, isPdf }'
+                : 'Media upload succeeded but no mediaUrn was returned'
+            );
+          }
+
+          mediaOptions = {
+            mediaUrn,
+            mediaIsPdf: Boolean(isPdf ?? mimeType === 'application/pdf'),
+          };
+
+          toast.success(`Step 1/2 done · ${mediaUrn}`, { id: uploadToastId });
+        } catch (uploadErr) {
+          toast.dismiss(uploadToastId);
+          throw new Error(`Media upload failed: ${getErrorMessage(uploadErr)}`);
+        }
       }
 
-      const successCount = results.filter((r) => r.status === 200 || r.status === 'success' || r.status === '200').length;
-      if (successCount === results.length) {
+      // Step 2 — Post with URN only (no image / mediaBase64 fields)
+      console.log('[usePost] Step 2/2 /api/post', {
+        mediaUrn: mediaOptions?.mediaUrn || null,
+        mediaIsPdf: mediaOptions?.mediaIsPdf || false,
+      });
+      const res = await postContent(content, targetPages, targetGroups, mediaOptions);
+      stopProgressSimulation();
+
+      console.log('[usePost] /api/post raw response:', res.status, res.data);
+      // Shape: { success, mediaAttached, results, logRow } — ignore logRow
+      const data = res.data;
+      const { success, results, mediaAttached } = parsePublishResults(data, 'Post');
+
+      if (mediaAttached || mediaOptions?.mediaUrn) {
+        toast.success('Post published with media attached.');
+      }
+
+      const successCount = results.filter(isTargetSuccess).length;
+      if (success && results.length > 0 && successCount === results.length) {
         toast.success(`🎉 Published to all ${results.length} targets successfully!`);
       } else if (successCount > 0) {
         toast.error(`⚠️ Published to ${successCount} of ${results.length} targets. Some targets failed.`);
@@ -175,7 +284,6 @@ export const usePost = () => {
         toast.error('❌ Failed to publish to selected targets.');
       }
 
-      // Record activity
       addActivity({
         mode: 'create',
         contentPreview: content.slice(0, 100) + '...',
@@ -183,11 +291,12 @@ export const usePost = () => {
         targets: results.map((r) => ({
           name: r.target,
           type: r.type,
-          status: r.status === 200 || r.status === 'success' || r.status === '200' ? 'success' : 'failed',
+          status: isTargetSuccess(r) ? 'success' : 'failed',
           postUrn: r.postUrn,
-          error: r.error || (r.status !== 200 && r.status !== 'success' ? `HTTP ${r.status}` : undefined),
+          error: r.error || (!isTargetSuccess(r) ? `HTTP ${r.status}` : undefined),
         })),
         status: successCount === results.length ? 'success' : successCount > 0 ? 'partial' : 'failed',
+        mediaUrn: mediaOptions?.mediaUrn,
       });
 
       setLastResults(results);
@@ -244,23 +353,13 @@ export const usePost = () => {
       const res = await resharePost(postUrl, commentary, targetPages, targetGroups);
       stopProgressSimulation();
 
-      let results = [];
-      let resolvedUrn = res.data?.resolvedUrn || 'urn:li:ugcPost:' + Date.now();
+      console.log('[usePost] /api/reshare raw response:', res.status, res.data);
+      // Shape: { success, results, resolvedUrn?, logRow? } — ignore logRow
+      const data = res.data;
+      const { success, results, resolvedUrn } = parsePublishResults(data, 'Reshare');
 
-      if (res.data?.success && Array.isArray(res.data?.results)) {
-        results = res.data.results;
-      } else if (res.data?.success === false) {
-        throw new Error(res.data?.error || res.data?.message || 'Resharing failed');
-      } else {
-        results = allTargets.map((t) => ({
-          target: t.name,
-          type: t.type,
-          status: 200,
-        }));
-      }
-
-      const successCount = results.filter((r) => r.status === 200 || r.status === 'success' || r.status === '200').length;
-      if (successCount === results.length) {
+      const successCount = results.filter(isTargetSuccess).length;
+      if (success && results.length > 0 && successCount === results.length) {
         toast.success(`🎉 Reshared to all ${results.length} targets successfully!`);
       } else if (successCount > 0) {
         toast.error(`⚠️ Reshared to ${successCount} of ${results.length} targets. Some targets failed.`);
@@ -275,11 +374,11 @@ export const usePost = () => {
         targets: results.map((r) => ({
           name: r.target,
           type: r.type,
-          status: r.status === 200 || r.status === 'success' || r.status === '200' ? 'success' : 'failed',
-          error: r.error || (r.status !== 200 && r.status !== 'success' ? `HTTP ${r.status}` : undefined),
+          status: isTargetSuccess(r) ? 'success' : 'failed',
+          error: r.error || (!isTargetSuccess(r) ? `HTTP ${r.status}` : undefined),
         })),
         status: successCount === results.length ? 'success' : successCount > 0 ? 'partial' : 'failed',
-        resolvedUrn,
+        resolvedUrn: resolvedUrn || undefined,
       });
 
       setLastResults(results);
