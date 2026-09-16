@@ -218,6 +218,8 @@ export const usePost = () => {
           throw new Error('Attached media base64 was empty after stripping the data URL prefix.');
         }
 
+        const fileIsPdf = typeof media === 'object' ? Boolean(media.isPdf) : false;
+
         const uploadToastId = toast.loading('Step 1/2: Uploading media via /api/upload-media…');
         try {
           // Step 1 — Upload media first
@@ -248,7 +250,7 @@ export const usePost = () => {
 
           mediaOptions = {
             mediaUrn,
-            mediaIsPdf: Boolean(isPdf ?? mimeType === 'application/pdf'),
+            mediaIsPdf: Boolean(isPdf ?? fileIsPdf ?? (mimeType === 'application/pdf')),
           };
 
           toast.success(`Step 1/2 done · ${mediaUrn}`, { id: uploadToastId });

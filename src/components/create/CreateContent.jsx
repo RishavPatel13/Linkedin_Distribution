@@ -106,7 +106,8 @@ export const CreateContent = () => {
     const targetPages = pages.filter((p) => selectedPages.includes(p.companyId || p.id));
     const targetGroups = groups.filter((g) => selectedGroups.includes(g.groupId || g.id));
 
-    const results = await post(content, targetPages, targetGroups);
+    // Pass attached media (image/document) as 4th argument so /api/upload-media is called before /api/post
+    const results = await post(content, targetPages, targetGroups, image);
     if (results) {
       setShowResultsModal(true);
     }
@@ -270,7 +271,7 @@ export const CreateContent = () => {
       <ConfirmDialog
         isOpen={showPublishDialog}
         title="Confirm LinkedIn Distribution"
-        message={`You are about to publish this post to ${selectedPages.length} company page(s) and ${selectedGroups.length} group(s). Due to human-pacing delays, this operation will take approximately ${Math.max(30, totalTargetsCount * 15)} seconds.`}
+        message={`You are about to publish this post${image ? ' (with media attached)' : ''} to ${selectedPages.length} company page(s) and ${selectedGroups.length} group(s). Due to human-pacing delays, this operation will take approximately ${Math.max(30, totalTargetsCount * 15)} seconds.`}
         confirmLabel="Proceed & Publish"
         cancelLabel="Cancel"
         onConfirm={handleConfirmPublish}

@@ -96,11 +96,15 @@ export const postContent = async (content, pages, groups, mediaOptions = null) =
 };
 
 // 3. Upload media (image/PDF) — raw base64 WITHOUT data: prefix
+// Uses native fetch (NOT axios) so the request is guaranteed to reach n8n.
+// Axios with an absolute URL on an instance that already has a baseURL can
+// silently mis-route the call; fetch has no such edge-case.
 export const uploadMedia = async ({ mimeType, filename, mediaBase64 }) => {
   if (!mediaBase64) {
     throw new Error('mediaBase64 is required for /api/upload-media');
   }
 
+  // Strip any accidental data-URL prefix (e.g. "data:image/jpeg;base64,")
   const rawBase64 = String(mediaBase64).includes(',')
     ? String(mediaBase64).split(',')[1]
     : String(mediaBase64);
@@ -108,10 +112,45 @@ export const uploadMedia = async ({ mimeType, filename, mediaBase64 }) => {
   const payload = {
     mimeType: mimeType || 'image/jpeg',
     filename: filename || 'photo.jpg',
-    mediaBase64: rawBase64,
+    mediaBase64: rawBase64,   // raw base64, NO "data:..." prefix
   };
 
-  return api.post(UPLOAD_MEDIA_URL, payload, { timeout: TIMEOUT_SHORT_MS });
+  console.log('[uploadMedia] → POST', UPLOAD_MEDIA_URL, { mimeType: payload.mimeType, filename: payload.filename, base64Len: rawBase64.length });
+
+  let response;
+  try {
+    response = await fetch(UPLOAD_MEDIA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(TIMEOUT_SHORT_MS),
+    });
+  } catch (fetchErr) {
+    // Network-level failure (offline, CORS preflight blocked, AbortError, etc.)
+    const msg =
+      fetchErr.name === 'AbortError' || fetchErr.name === 'TimeoutError'
+        ? 'Upload timed out after 30 seconds — check n8n workflow is active.'
+        : `Network error reaching /api/upload-media: ${fetchErr.message}`;
+    throw new Error(msg);
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(
+      `n8n /api/upload-media returned non-JSON (HTTP ${response.status}). Check the workflow Respond node.`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error || data?.message || `Upload failed with HTTP ${response.status}`
+    );
+  }
+
+  // Normalize to axios-style { status, data } so callers need no changes
+  return { status: response.status, data };
 };
 
 // 4. Reshare post

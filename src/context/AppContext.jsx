@@ -254,19 +254,32 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Delete Page
+  // Delete Page — only update UI after confirmed sheet delete
   const deletePageItem = async (id) => {
     setIsLoading(true);
     try {
       const res = await apiDeletePage(id);
-      if (res.data?.success === false) {
-        throw new Error(res.data.error || res.data.message || 'Failed to delete company page');
+      const data = Array.isArray(res.data) ? res.data[0] : res.data;
+
+      console.log('[pages] delete response:', res.status, data);
+
+      if (!data || data.success !== true) {
+        throw new Error(
+          data?.error ||
+            data?.message ||
+            (data == null || data === ''
+              ? 'Delete API returned empty body — sheet was not updated'
+              : 'Failed to delete company page')
+        );
       }
-      if (res.data?.success && Array.isArray(res.data.pages)) {
-        setPages(res.data.pages);
+
+      if (Array.isArray(data.pages)) {
+        setPages(data.pages);
       } else {
-        setPages((prev) => prev.filter((p) => String(p.id) !== String(id)));
+        // success but no list — re-list from sheet (never optimistic local-only delete)
+        await fetchPages(true);
       }
+
       toast.success('Page removed successfully.');
       return true;
     } catch (err) {
@@ -310,19 +323,32 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Delete Group
+  // Delete Group — only update UI after confirmed sheet delete
   const deleteGroupItem = async (id) => {
     setIsLoading(true);
     try {
       const res = await apiDeleteGroup(id);
-      if (res.data?.success === false) {
-        throw new Error(res.data.error || res.data.message || 'Failed to delete group');
+      const data = Array.isArray(res.data) ? res.data[0] : res.data;
+
+      console.log('[groups] delete response:', res.status, data);
+
+      if (!data || data.success !== true) {
+        throw new Error(
+          data?.error ||
+            data?.message ||
+            (data == null || data === ''
+              ? 'Delete API returned empty body — sheet was not updated'
+              : 'Failed to delete group')
+        );
       }
-      if (res.data?.success && Array.isArray(res.data.groups)) {
-        setGroups(res.data.groups);
+
+      if (Array.isArray(data.groups)) {
+        setGroups(data.groups);
       } else {
-        setGroups((prev) => prev.filter((g) => String(g.id) !== String(id)));
+        // success but no list — re-list from sheet (never optimistic local-only delete)
+        await fetchGroups(true);
       }
+
       toast.success('Group removed successfully.');
       return true;
     } catch (err) {

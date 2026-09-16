@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   PenSquare,
@@ -13,14 +13,26 @@ import {
   CheckCircle2,
   AlertCircle,
   ExternalLink,
+  LogOut,
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
 
 export const Sidebar = ({ isOpen, onClose }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { connectionStatus } = useApp();
+  const { userId, logout } = useAuth();
 
   const isSettingsActive = location.pathname.startsWith('/settings');
+
+  const handleLogout = () => {
+    logout();
+    toast.success('Signed out successfully.');
+    navigate('/login', { replace: true });
+    onClose?.();
+  };
 
   const mainNavItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
@@ -188,7 +200,23 @@ export const Sidebar = ({ isOpen, onClose }) => {
         </div>
 
         {/* Footer / Connection Indicator */}
-        <div className="p-3 border-t border-slate-800 bg-slate-900/60">
+        <div className="p-3 border-t border-slate-800 bg-slate-900/60 space-y-2">
+          <div className="flex items-center justify-between px-2.5 py-1.5">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Signed in</div>
+              <div className="text-xs font-semibold text-slate-200 truncate">{userId || 'Admin'}</div>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800 border border-transparent hover:border-slate-700 transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Logout
+            </button>
+          </div>
+
           <NavLink
             to="/settings/connection"
             className={`flex items-center justify-between p-2.5 rounded-lg border text-xs transition-colors hover:border-slate-700 ${status.border} ${status.bg}`}

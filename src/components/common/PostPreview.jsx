@@ -1,5 +1,5 @@
 import React from 'react';
-import { ThumbsUp, MessageSquare, Repeat2, Send, Globe, Building2, User, MoreHorizontal, Sparkles } from 'lucide-react';
+import { ThumbsUp, MessageSquare, Repeat2, Send, Globe, Building2, User, MoreHorizontal, Sparkles, FileText } from 'lucide-react';
 
 export const PostPreview = ({
   author,
@@ -82,16 +82,39 @@ export const PostPreview = ({
           {text || <span className="text-slate-400 italic">Post content will preview here...</span>}
         </div>
 
-        {/* Post Image (if any) */}
-        {image && (
-          <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-100 max-h-96 flex items-center justify-center">
-            <img
-              src={image}
-              alt="Post attachment"
-              className="w-full h-auto max-h-96 object-cover"
-            />
-          </div>
-        )}
+        {/* Post Media (Image or Document) */}
+        {image && (() => {
+          const previewSrc = typeof image === 'string' ? image : image?.dataUrl;
+          const isPdf = typeof image === 'object' ? Boolean(image?.isPdf || image?.mimeType === 'application/pdf') : false;
+          const fileName = typeof image === 'object' ? image?.filename : 'Attached media';
+          const fileSizeKb = typeof image === 'object' && image?.fileSize ? Math.round(image.fileSize / 1024) : null;
+
+          if (isPdf) {
+            return (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex items-center gap-3">
+                <div className="p-3 bg-red-100 text-red-600 rounded-lg shrink-0">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-900 truncate">{fileName}</div>
+                  <div className="text-xs text-slate-500">
+                    LinkedIn Document (PDF){fileSizeKb ? ` • ${fileSizeKb} KB` : ''}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-100 max-h-96 flex items-center justify-center">
+              <img
+                src={previewSrc}
+                alt={fileName}
+                className="w-full h-auto max-h-96 object-cover"
+              />
+            </div>
+          );
+        })()}
 
         {/* Reactions Counter Bar */}
         <div className="pt-2 flex items-center justify-between text-xs text-slate-500 border-t border-slate-100">
