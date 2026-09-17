@@ -1,0 +1,20 @@
+{
+  "name": "linkedin-group-automation",
+  "description": "LinkedIn Distribution System — React + Vite SPA",
+  "repository": "https://github.com/trinathgit/linkedin_Group_Automation",
+  "stack": "heroku-24",
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ],
+  "env": {
+    "NODE_ENV": {
+      "description": "Node environment",
+      "value": "production"
+    }
+  },
+  "scripts": {
+    "postdeploy": "echo Deploy complete"
+  }
+}
