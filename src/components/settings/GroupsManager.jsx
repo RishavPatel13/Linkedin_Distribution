@@ -56,12 +56,15 @@ export const GroupsManager = () => {
         </div>
         <button
           type="button"
-          onClick={() => fetchGroups()}
+          onClick={async () => {
+            const ok = await fetchGroups();
+            if (ok) toast.success('Groups synced from Google Sheet.');
+          }}
           disabled={isLoading}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-sm self-start sm:self-auto"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          <span>Refresh List</span>
+          <span>Refresh from Sheet</span>
         </button>
       </div>
 

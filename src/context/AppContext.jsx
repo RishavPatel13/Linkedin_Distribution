@@ -74,6 +74,45 @@ const DEFAULT_ACTIVITIES = [
   },
 ];
 
+/** n8n often returns [{ ... }] — unwrap to the object that has the list field */
+const unwrapSheetPayload = (data, listKey) => {
+  if (data == null || data === '') return null;
+  if (Array.isArray(data)) {
+    return (
+      data.find((item) => item && typeof item === 'object' && Array.isArray(item[listKey])) ||
+      data.find((item) => item && typeof item === 'object' && item.success != null) ||
+      data[0] ||
+      null
+    );
+  }
+  if (typeof data === 'object' && data.data && (Array.isArray(data.data[listKey]) || data.data.success != null)) {
+    return data.data;
+  }
+  return data;
+};
+
+const extractSheetList = (data, listKey) => {
+  const root = unwrapSheetPayload(data, listKey);
+  if (!root || typeof root !== 'object') {
+    return { ok: false, list: null, error: 'Empty or invalid API response' };
+  }
+  if (root.success === false) {
+    return {
+      ok: false,
+      list: null,
+      error: root.error || root.message || 'Request failed',
+    };
+  }
+  if (!Array.isArray(root[listKey])) {
+    return {
+      ok: false,
+      list: null,
+      error: `Missing ${listKey}[] in API response`,
+    };
+  }
+  return { ok: true, list: root[listKey], root };
+};
+
 export const AppProvider = ({ children }) => {
   const [pages, setPages] = useState(() => {
     try {
@@ -187,62 +226,96 @@ export const AppProvider = ({ children }) => {
     }
   }, [lastTested]);
 
-  // Fetch Pages from API
+  // Fetch Pages from Google Sheet via n8n — sheet is source of truth
   const fetchPages = useCallback(async (quiet = false) => {
     try {
       const res = await listPages();
-      if (res.data?.success && Array.isArray(res.data.pages)) {
-        setPages(res.data.pages);
+      console.log('[pages] list response:', res.status, res.data);
+      const parsed = extractSheetList(res.data, 'pages');
+      if (!parsed.ok) {
+        throw new Error(parsed.error);
       }
+      setPages(parsed.list);
+      return true;
     } catch (err) {
+      const msg = getErrorMessage(err);
+      console.warn('Could not fetch pages from n8n webhook, keeping cached pages.', err);
       if (!quiet) {
-        console.warn('Could not fetch pages from n8n webhook, using cached pages.', err);
+        toast.error(`Could not sync pages from sheet: ${msg}`);
       }
+      return false;
     }
   }, []);
 
-  // Fetch Groups from API
+  // Fetch Groups from Google Sheet via n8n — sheet is source of truth
   const fetchGroups = useCallback(async (quiet = false) => {
     try {
       const res = await listGroups();
-      if (res.data?.success && Array.isArray(res.data.groups)) {
-        setGroups(res.data.groups);
+      console.log('[groups] list response:', res.status, res.data);
+      const parsed = extractSheetList(res.data, 'groups');
+      if (!parsed.ok) {
+        throw new Error(parsed.error);
       }
+      setGroups(parsed.list);
+      return true;
     } catch (err) {
+      const msg = getErrorMessage(err);
+      console.warn('Could not fetch groups from n8n webhook, keeping cached groups.', err);
       if (!quiet) {
-        console.warn('Could not fetch groups from n8n webhook, using cached groups.', err);
+        toast.error(`Could not sync groups from sheet: ${msg}`);
       }
+      return false;
     }
   }, []);
 
-  // Initial fetch on app mount
+  // Initial fetch + re-sync when tab becomes visible (Heroku / multi-device)
   useEffect(() => {
     fetchPages(true);
     fetchGroups(true);
+
+    const syncFromSheet = () => {
+      if (document.visibilityState === 'visible') {
+        fetchPages(true);
+        fetchGroups(true);
+      }
+    };
+    document.addEventListener('visibilitychange', syncFromSheet);
+    window.addEventListener('focus', syncFromSheet);
+    return () => {
+      document.removeEventListener('visibilitychange', syncFromSheet);
+      window.removeEventListener('focus', syncFromSheet);
+    };
   }, [fetchPages, fetchGroups]);
 
-  // Add Page
+  // Add Page — always re-list from sheet after success (no optimistic-only UI)
   const addPageItem = async (name, url, companyId) => {
     setIsLoading(true);
     try {
       const res = await apiAddPage(name, url);
-      if (res.data?.success === false) {
-        throw new Error(res.data.error || res.data.message || 'Failed to add company page');
+      const parsed = extractSheetList(res.data, 'pages');
+      console.log('[pages] add response:', res.status, res.data);
+
+      if (res.data?.success === false || (parsed.root && parsed.root.success === false)) {
+        throw new Error(
+          parsed.error ||
+            res.data?.error ||
+            res.data?.message ||
+            'Failed to add company page'
+        );
       }
-      if (res.data?.success && Array.isArray(res.data.pages)) {
-        setPages(res.data.pages);
+
+      if (parsed.ok) {
+        setPages(parsed.list);
       } else {
-        // Fallback optimistic add if backend returned custom format or offline
-        const newPage = {
-          id: String(Date.now()),
-          name,
-          url,
-          companyId: companyId || String(Date.now()),
-          addedAt: new Date().toISOString(),
-          status: 'active',
-        };
-        setPages((prev) => [...prev, newPage]);
+        const synced = await fetchPages(true);
+        if (!synced) {
+          throw new Error(
+            parsed.error ||
+              'Page may have been saved to the sheet, but the UI could not refresh the list. Tap Refresh.'
+          );
+        }
       }
+
       toast.success(`Page "${name}" added successfully.`);
       return true;
     } catch (err) {
@@ -254,13 +327,12 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Delete Page — only update UI after confirmed sheet delete
+  // Delete Page — only update UI from sheet list after confirmed delete
   const deletePageItem = async (id) => {
     setIsLoading(true);
     try {
       const res = await apiDeletePage(id);
-      const data = Array.isArray(res.data) ? res.data[0] : res.data;
-
+      const data = unwrapSheetPayload(res.data, 'pages');
       console.log('[pages] delete response:', res.status, data);
 
       if (!data || data.success !== true) {
@@ -276,8 +348,10 @@ export const AppProvider = ({ children }) => {
       if (Array.isArray(data.pages)) {
         setPages(data.pages);
       } else {
-        // success but no list — re-list from sheet (never optimistic local-only delete)
-        await fetchPages(true);
+        const synced = await fetchPages(true);
+        if (!synced) {
+          throw new Error('Deleted on sheet, but UI could not refresh. Tap Refresh.');
+        }
       }
 
       toast.success('Page removed successfully.');
@@ -291,27 +365,35 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Add Group
+  // Add Group — always re-list from sheet after success
   const addGroupItem = async (name, url, groupId) => {
     setIsLoading(true);
     try {
       const res = await apiAddGroup(name, url);
-      if (res.data?.success === false) {
-        throw new Error(res.data.error || res.data.message || 'Failed to add group');
+      const parsed = extractSheetList(res.data, 'groups');
+      console.log('[groups] add response:', res.status, res.data);
+
+      if (res.data?.success === false || (parsed.root && parsed.root.success === false)) {
+        throw new Error(
+          parsed.error ||
+            res.data?.error ||
+            res.data?.message ||
+            'Failed to add group'
+        );
       }
-      if (res.data?.success && Array.isArray(res.data.groups)) {
-        setGroups(res.data.groups);
+
+      if (parsed.ok) {
+        setGroups(parsed.list);
       } else {
-        const newGroup = {
-          id: String(Date.now()),
-          name,
-          url,
-          groupId: groupId || String(Date.now()),
-          addedAt: new Date().toISOString(),
-          status: 'active',
-        };
-        setGroups((prev) => [...prev, newGroup]);
+        const synced = await fetchGroups(true);
+        if (!synced) {
+          throw new Error(
+            parsed.error ||
+              'Group may have been saved to the sheet, but the UI could not refresh the list. Tap Refresh.'
+          );
+        }
       }
+
       toast.success(`Group "${name}" added successfully.`);
       return true;
     } catch (err) {
@@ -323,13 +405,12 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Delete Group — only update UI after confirmed sheet delete
+  // Delete Group — only update UI from sheet list after confirmed delete
   const deleteGroupItem = async (id) => {
     setIsLoading(true);
     try {
       const res = await apiDeleteGroup(id);
-      const data = Array.isArray(res.data) ? res.data[0] : res.data;
-
+      const data = unwrapSheetPayload(res.data, 'groups');
       console.log('[groups] delete response:', res.status, data);
 
       if (!data || data.success !== true) {
@@ -345,8 +426,10 @@ export const AppProvider = ({ children }) => {
       if (Array.isArray(data.groups)) {
         setGroups(data.groups);
       } else {
-        // success but no list — re-list from sheet (never optimistic local-only delete)
-        await fetchGroups(true);
+        const synced = await fetchGroups(true);
+        if (!synced) {
+          throw new Error('Deleted on sheet, but UI could not refresh. Tap Refresh.');
+        }
       }
 
       toast.success('Group removed successfully.');
