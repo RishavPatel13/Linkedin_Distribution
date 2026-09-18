@@ -14,65 +14,25 @@ import toast from 'react-hot-toast';
 const AppContext = createContext();
 
 const STORAGE_KEYS = {
-  ACTIVITIES: 'linkedin_distribution_activities',
+  ACTIVITIES: 'linkedin_distribution_activities_v2',
   CONNECTION: 'linkedin_connection_status',
   CONNECTION_ERROR: 'linkedin_connection_error',
   LAST_TESTED: 'linkedin_last_tested',
-  PAGES: 'linkedin_cached_pages',
-  GROUPS: 'linkedin_cached_groups',
+  // v2 keys ignore any old localStorage that was seeded with hardcoded demo pages/groups
+  PAGES: 'linkedin_cached_pages_v2',
+  GROUPS: 'linkedin_cached_groups_v2',
 };
 
-// Seed demo data for instant out-of-the-box readiness
-const DEFAULT_PAGES = [
-  { id: '1', name: 'GTechIB', companyId: '103355214', url: 'https://www.linkedin.com/company/103355214/', status: 'active' },
-  { id: '2', name: 'Kivocare', companyId: '987654', url: 'https://www.linkedin.com/company/987654/', status: 'active' },
-];
-
-const DEFAULT_GROUPS = [
-  { id: '1', name: 'IT, Telecom, Cloud, Wireless and Cyber Industry Professionals', groupId: '68315', url: 'https://www.linkedin.com/groups/68315/', status: 'active' },
-  { id: '2', name: 'Telecoms Professionals: IoT, LTE, M2M, 5G, Internet of Things', groupId: '23013', url: 'https://www.linkedin.com/groups/23013/', status: 'active' },
-  { id: '3', name: 'The AI Marketer Connection', groupId: '4493185', url: 'https://www.linkedin.com/groups/4493185/', status: 'active' },
-  { id: '4', name: 'Linkedin Automation testing', groupId: '40509003', url: 'https://www.linkedin.com/groups/40509003/', status: 'active' },
-];
-
-const DEFAULT_ACTIVITIES = [
-  {
-    id: 'act-1',
-    timestamp: new Date(Date.now() - 3600000 * 22).toISOString(),
-    mode: 'create',
-    contentPreview: 'Why mid-market tech companies are undervalued in today\'s M&A market: fragmented reach...',
-    fullContent: 'Why mid-market tech companies are undervalued in today\'s M&A market\n\nMost mid-market tech founders leave 20-40% of their valuation on the table due to fragmented brand visibility and narrow executive distribution.',
-    targets: [
-      { name: 'GTechIB', type: 'page', status: 'success' },
-      { name: 'The AI Marketer Connection', type: 'group', status: 'success' },
-      { name: 'Linkedin Automation testing', type: 'group', status: 'success' },
-    ],
-    status: 'success',
-  },
-  {
-    id: 'act-2',
-    timestamp: new Date(Date.now() - 3600000 * 48).toISOString(),
-    mode: 'reshare',
-    contentPreview: 'Reshared: Financial metrics tech founders must know before pitching to tier-1 funds...',
-    fullContent: 'Great insights on tech M&A trends and EBITDA multiples across mid-market tech in 2026.\n\nOriginal: https://www.linkedin.com/feed/update/urn:li:activity:7503860108951445504',
-    targets: [
-      { name: 'Linkedin Automation testing', type: 'group', status: 'success' },
-      { name: 'GTechIB', type: 'page', status: 'success' },
-    ],
-    status: 'success',
-  },
-  {
-    id: 'act-3',
-    timestamp: new Date(Date.now() - 3600000 * 72).toISOString(),
-    mode: 'create',
-    contentPreview: 'Lead Generation Tips for SaaS Founders in B2B Tech: Why distribution beats product...',
-    fullContent: 'Lead Generation Tips for SaaS Founders in B2B Tech: Organic LinkedIn reach outperforms outbound cold email by 3.2x when company leadership publishes consistently.',
-    targets: [
-      { name: 'IT, Telecom, Cloud, Wireless and Cyber Industry Professionals', type: 'group', status: 'failed', error: 'Target submission rate limit reached' },
-    ],
-    status: 'failed',
-  },
-];
+// Clear legacy demo cache keys once (hardcoded GTechIB / Kivocare / etc.)
+try {
+  [
+    'linkedin_cached_pages',
+    'linkedin_cached_groups',
+    'linkedin_distribution_activities',
+  ].forEach((key) => localStorage.removeItem(key));
+} catch {
+  // ignore
+}
 
 /** n8n often returns [{ ... }] — unwrap to the object that has the list field */
 const unwrapSheetPayload = (data, listKey) => {
@@ -114,12 +74,13 @@ const extractSheetList = (data, listKey) => {
 };
 
 export const AppProvider = ({ children }) => {
+  // Pages/groups come from Google Sheet only — never hardcode demo rows
   const [pages, setPages] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PAGES);
-      return saved ? JSON.parse(saved) : DEFAULT_PAGES;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return DEFAULT_PAGES;
+      return [];
     }
   });
 
@@ -128,14 +89,13 @@ export const AppProvider = ({ children }) => {
       const saved = localStorage.getItem(STORAGE_KEYS.GROUPS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Automatically migrate legacy 'GTechIB Community' to 'Linkedin Automation testing'
         return parsed.map((g) =>
           g.name === 'GTechIB Community' ? { ...g, name: 'Linkedin Automation testing' } : g
         );
       }
-      return DEFAULT_GROUPS;
+      return [];
     } catch {
-      return DEFAULT_GROUPS;
+      return [];
     }
   });
 
@@ -144,7 +104,6 @@ export const AppProvider = ({ children }) => {
       const saved = localStorage.getItem(STORAGE_KEYS.ACTIVITIES);
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Automatically migrate legacy 'GTechIB Community' in stored activity history
         return parsed.map((act) => ({
           ...act,
           targets: (act.targets || []).map((t) =>
@@ -152,9 +111,9 @@ export const AppProvider = ({ children }) => {
           ),
         }));
       }
-      return DEFAULT_ACTIVITIES;
+      return [];
     } catch {
-      return DEFAULT_ACTIVITIES;
+      return [];
     }
   });
 
